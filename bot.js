@@ -342,24 +342,26 @@ bot.catch((err, ctx) => {
   console.error(`Error for ${ctx.updateType}:`, err);
 });
 
+// Launch Lightweight HTTP health check server for Render immediately
+const http = require('http');
+const PORT = process.env.PORT || 3000;
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('LinkedIn Telegram Bot is running 24/7 on Render!\n');
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`🌐 Health check server listening on 0.0.0.0:${PORT}`);
+});
+
 // Launch Bot
 (async () => {
   try {
     const me = await bot.telegram.getMe();
     console.log(`🤖 Logged in as @${me.username} (${me.first_name})`);
     console.log(`🔐 Access Passcode protection enabled: [${BOT_PASSCODE}]`);
-    await bot.launch();
+    bot.launch();
     console.log('✅ Bot is running with Gemini 3.6 Flash, Image generation & Passcode protection!');
-
-    // Lightweight HTTP health check server for Render
-    const http = require('http');
-    const PORT = process.env.PORT || 3000;
-    http.createServer((req, res) => {
-      res.writeHead(200, { 'Content-Type': 'text/plain' });
-      res.end('LinkedIn Telegram Bot is running 24/7!');
-    }).listen(PORT, () => {
-      console.log(`🌐 Health check server listening on port ${PORT}`);
-    });
   } catch (err) {
     console.error('❌ Failed to start bot:', err);
   }
