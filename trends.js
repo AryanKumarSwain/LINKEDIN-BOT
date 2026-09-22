@@ -39,9 +39,9 @@ async function extractArticleImage(url) {
 }
 
 /**
- * Fetch trending AI & Technology topics with authentic news photos.
+ * Fetch top 5 trending tech topics from reliable feeds.
  */
-async function getTrendingTechTopic() {
+async function getTopTrendingTechTopics(count = 5) {
   const sources = [
     {
       name: 'TechCrunch AI',
@@ -52,7 +52,7 @@ async function getTrendingTechTopic() {
       url: 'https://www.theverge.com/rss/index.xml'
     },
     {
-      name: 'Google News AI & Emerging Tech',
+      name: 'Google News AI',
       url: 'https://news.google.com/rss/search?q=Artificial+Intelligence+OR+Generative+AI+when:2d&hl=en-US&gl=US&ceid=US:en'
     }
   ];
@@ -64,20 +64,22 @@ async function getTrendingTechTopic() {
       const feed = await parser.parseURL(src.url);
       if (feed && feed.items && feed.items.length > 0) {
         for (const item of feed.items.slice(0, 10)) {
-          const title = (item.title || '').trim();
+          const rawTitle = (item.title || '').trim();
+          const cleanTitle = rawTitle.replace(/\s*-\s*[^-]+$/, '').trim();
           const snippet = (item.contentSnippet || item.content || '').replace(/<[^>]*>?/gm, '').trim();
           const link = item.link || '';
-          if (title.length > 10 && link) {
+          if (cleanTitle.length > 15 && link && !candidates.some(c => c.title.toLowerCase() === cleanTitle.toLowerCase())) {
             candidates.push({
-              title,
-              snippet: snippet.slice(0, 250),
+              title: cleanTitle,
+              snippet: snippet.slice(0, 200),
               source: src.name,
-              link: link
+              link: link,
+              imageUrl: null
             });
           }
         }
       }
-      if (candidates.length >= 8) break;
+      if (candidates.length >= 10) break;
     } catch (err) {
       continue;
     }
@@ -89,46 +91,84 @@ async function getTrendingTechTopic() {
     return TECH_AI_KEYWORDS.some(k => text.includes(k));
   });
 
-  const selectedList = techFiltered.length > 0 ? techFiltered : candidates;
+  const selectedList = (techFiltered.length >= count ? techFiltered : candidates).slice(0, count);
 
+  // If empty, return fallbacks
   if (selectedList.length === 0) {
-    return {
-      title: 'Agentic AI and Autonomous Reasoning Systems in 2026',
-      snippet: 'How multi-step autonomous AI workflows are transforming modern software architectures.',
-      source: 'Curated Tech Insights',
-      link: '',
-      imageUrl: 'https://images.unsplash.com/photo-1677442136019-21780ecad995?w=1200&auto=format&fit=crop&q=80'
-    };
+    return [
+      {
+        id: 1,
+        title: 'Agentic AI Workflows Replacing Traditional SaaS in 2026',
+        snippet: 'How multi-step autonomous AI workflows are transforming modern software architectures.',
+        source: 'Curated Tech',
+        link: '',
+        imageUrl: 'https://images.unsplash.com/photo-1677442136019-21780ecad995?w=1200&auto=format&fit=crop&q=80'
+      },
+      {
+        id: 2,
+        title: 'Next-Gen AI Chips and GPU Architecture Bottlenecks',
+        snippet: 'Why memory bandwidth and cooling are the real bottlenecks in hardware.',
+        source: 'Curated Tech',
+        link: '',
+        imageUrl: 'https://images.unsplash.com/photo-1518770660439-4636190af475?w=1200&auto=format&fit=crop&q=80'
+      },
+      {
+        id: 3,
+        title: 'Open Source AI Models vs Closed Proprietary Giants',
+        snippet: 'The rapid closing of the performance gap between open and closed models.',
+        source: 'Curated Tech',
+        link: '',
+        imageUrl: 'https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=1200&auto=format&fit=crop&q=80'
+      },
+      {
+        id: 4,
+        title: 'The Evolution of Software Engineering in the AI Pair Programming Era',
+        snippet: 'How developer roles are shifting towards system architecture and evaluation.',
+        source: 'Curated Tech',
+        link: '',
+        imageUrl: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=1200&auto=format&fit=crop&q=80'
+      },
+      {
+        id: 5,
+        title: 'Cybersecurity and Autonomous Agent Safety in Production',
+        snippet: 'Managing risk and prompt injection in high-stakes autonomous workflows.',
+        source: 'Curated Tech',
+        link: '',
+        imageUrl: 'https://images.unsplash.com/photo-1526374965328-7f61d4dc18c5?w=1200&auto=format&fit=crop&q=80'
+      }
+    ];
   }
 
-  // Pick one randomly from the top 5
-  const pick = selectedList[Math.floor(Math.random() * Math.min(5, selectedList.length))];
-  const cleanTitle = pick.title.replace(/\s*-\s*[^-]+$/, '').trim();
-
-  // Try extracting hero image directly from the article
-  let articleImage = null;
-  if (pick.link) {
-    articleImage = await extractArticleImage(pick.link);
+  // Attach IDs and fetch hero images asynchronously
+  const results = [];
+  for (let i = 0; i < selectedList.length; i++) {
+    const item = selectedList[i];
+    let img = null;
+    if (item.link) {
+      img = await extractArticleImage(item.link);
+    }
+    results.push({
+      id: i + 1,
+      title: item.title,
+      snippet: item.snippet,
+      source: item.source,
+      link: item.link,
+      imageUrl: img
+    });
   }
 
-  return {
-    title: cleanTitle,
-    snippet: pick.snippet,
-    source: pick.source,
-    link: pick.link,
-    imageUrl: articleImage
-  };
+  return results;
 }
 
 module.exports = {
-  getTrendingTechTopic,
+  getTopTrendingTechTopics,
   extractArticleImage
 };
 
 if (require.main === module) {
   (async () => {
-    console.log('Fetching trending tech/AI topic...');
-    const topic = await getTrendingTechTopic();
-    console.log('Result:', JSON.stringify(topic, null, 2));
+    console.log('Fetching top 5 trending tech topics...');
+    const topics = await getTopTrendingTechTopics(5);
+    console.log(JSON.stringify(topics, null, 2));
   })();
 }

@@ -2,8 +2,9 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { Telegraf, Markup } = require('telegraf');
-const { getTrendingTechTopic } = require('./trends');
-const { generateLinkedInPost } = require('./ai');
+const { getTopTrendingTechTopics } = require('./trends');
+const { generateLinkedInPostText } = require('./ai');
+const { getMultipleImageOptions, downloadImageBuffer } = require('./browse_image');
 const { publishLinkedInPost } = require('./linkedin');
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
@@ -40,7 +41,7 @@ function persistVerifiedUser(chatId) {
 }
 
 // In-memory state store per chat
-// Stores: { topic, context, draft, imageUrl, imageBuffer, awaitingTopic, awaitingPasscode }
+// Stores: { topic, context, draft, directImageUrl, imageOptions, selectedImageIndex, imageBuffer, trendingList }
 const userSessions = new Map();
 
 function getSession(chatId) {
@@ -49,8 +50,11 @@ function getSession(chatId) {
       topic: '',
       context: '',
       draft: '',
-      imageUrl: '',
+      directImageUrl: '',
+      imageOptions: [],
+      selectedImageIndex: 0,
       imageBuffer: null,
+      trendingList: [],
       awaitingTopic: false,
       awaitingPasscode: false
     });
@@ -70,14 +74,14 @@ async function showStartMenu(ctx) {
   const welcomeText = 
 `👋 *Welcome to your LinkedIn AI Thought Leader Bot!*
 
-I research topics, draft human-like authentic posts with personal insights, pair them with a 3D visual, and publish directly to your LinkedIn.
+I research topics, draft humanic posts with personal insights, let you pick from 4 real photos, and publish directly to LinkedIn.
 
 📝 *Choose how you want to start:*
 • Type & send any *custom topic* you want to write about.
-• OR tap the button below to auto-pick a *Trending AI & Tech topic* from Google Trends! ⚡`;
+• OR tap *⚡ Skip Topic* to browse *5 Top Trending AI & Tech Stories*!`;
 
   const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('⚡ Skip Topic (Trending AI/Tech)', 'action_trending')],
+    [Markup.button.callback('⚡ Skip Topic (Show 5 Trending Topics)', 'action_trending_list')],
     [Markup.button.callback('⚙️ Setup LinkedIn / Help', 'action_help')]
   ]);
 
@@ -99,13 +103,13 @@ bot.command('start', async (ctx) => {
   await showStartMenu(ctx);
 });
 
-// Skip or Trend Command
+// Skip or Trend Command (Shows 5 Topics)
 bot.command(['skip', 'trend', 'trends'], async (ctx) => {
   if (!isVerified(ctx.chat.id)) {
     getSession(ctx.chat.id).awaitingPasscode = true;
     return ctx.reply('🔒 Access restricted. Please enter the verification passcode first:');
   }
-  await handleTrendingGeneration(ctx);
+  await handleShowTrendingList(ctx);
 });
 
 // Help & Setup Command
@@ -117,14 +121,14 @@ bot.command(['help', 'setup'], async (ctx) => {
   await sendHelpMessage(ctx);
 });
 
-// Callback Queries
-bot.action('action_trending', async (ctx) => {
+// Callback Queries: Show 5 Trending Topics
+bot.action('action_trending_list', async (ctx) => {
   if (!isVerified(ctx.chat.id)) {
     await ctx.answerCbQuery('Verification required!');
     return ctx.reply('🔒 Access restricted. Please enter the verification passcode first:');
   }
-  await ctx.answerCbQuery('Scanning trending stories...');
-  await handleTrendingGeneration(ctx);
+  await ctx.answerCbQuery('Fetching top 5 trending topics...');
+  await handleShowTrendingList(ctx);
 });
 
 bot.action('action_help', async (ctx) => {
@@ -136,6 +140,73 @@ bot.action('action_help', async (ctx) => {
   await sendHelpMessage(ctx);
 });
 
+// Callback Queries: Select One of the 5 Trending Topics
+bot.action(/pick_trend_(\d+)/, async (ctx) => {
+  if (!isVerified(ctx.chat.id)) {
+    await ctx.answerCbQuery('Verification required!');
+    return ctx.reply('🔒 Access restricted. Please enter the verification passcode first:');
+  }
+
+  const index = parseInt(ctx.match[1], 10);
+  const session = getSession(ctx.chat.id);
+  const picked = session.trendingList[index];
+
+  if (!picked) {
+    await ctx.answerCbQuery('Topic expired. Refreshing list...');
+    return handleShowTrendingList(ctx);
+  }
+
+  await ctx.answerCbQuery(`Selected: ${picked.title.slice(0, 30)}...`);
+  session.topic = picked.title;
+  session.context = picked.snippet;
+  session.directImageUrl = picked.imageUrl || '';
+
+  await generateAndPreview(ctx, picked.title, picked.snippet, picked.imageUrl);
+});
+
+// Callback Queries: Select Image Option (1, 2, 3, 4, or No Image)
+bot.action(/pick_img_(\d+)/, async (ctx) => {
+  if (!isVerified(ctx.chat.id)) return;
+
+  const imgIndex = parseInt(ctx.match[1], 10);
+  const session = getSession(ctx.chat.id);
+
+  if (!session.imageOptions || !session.imageOptions[imgIndex]) {
+    return ctx.answerCbQuery('Image option not found.');
+  }
+
+  await ctx.answerCbQuery(`Selected Photo ${imgIndex + 1}!`);
+  session.selectedImageIndex = imgIndex;
+  const chosen = session.imageOptions[imgIndex];
+
+  // Download buffer
+  session.imageBuffer = await downloadImageBuffer(chosen.url);
+
+  // Send visual confirmation
+  try {
+    await ctx.replyWithPhoto(chosen.url, {
+      caption: `✅ *Selected Photo ${imgIndex + 1} of ${session.imageOptions.length}*\n_Source: ${chosen.source}_\n\n👇 Click *[🚀 Publish to LinkedIn]* when ready!`,
+      parse_mode: 'Markdown'
+    });
+  } catch (err) {
+    await ctx.reply(`✅ *Selected Photo ${imgIndex + 1}* (${chosen.source})\nReady to publish!`, { parse_mode: 'Markdown' });
+  }
+
+  // Re-show Publish Action Buttons
+  await showPublishKeyboard(ctx);
+});
+
+bot.action('pick_img_none', async (ctx) => {
+  if (!isVerified(ctx.chat.id)) return;
+  const session = getSession(ctx.chat.id);
+  session.imageBuffer = null;
+  session.selectedImageIndex = -1;
+  await ctx.answerCbQuery('Image removed (Text-Only mode).');
+  await ctx.reply('📝 *Text-Only Mode Enabled:* No image will be attached to your post.');
+  await showPublishKeyboard(ctx);
+});
+
+// Callback Query: Publish to LinkedIn
 bot.action('action_publish', async (ctx) => {
   if (!isVerified(ctx.chat.id)) {
     await ctx.answerCbQuery('Verification required!');
@@ -148,7 +219,7 @@ bot.action('action_publish', async (ctx) => {
   }
 
   await ctx.answerCbQuery('Publishing to LinkedIn...');
-  const statusMsg = await ctx.reply('⏳ Uploading visual and publishing post to your LinkedIn feed...');
+  const statusMsg = await ctx.reply('⏳ Uploading image and publishing post to your LinkedIn feed...');
 
   try {
     const result = await publishLinkedInPost(session.draft, session.imageBuffer);
@@ -157,7 +228,7 @@ bot.action('action_publish', async (ctx) => {
       ctx.chat.id,
       statusMsg.message_id,
       null,
-      `🎉 *Post & Visual Published Successfully!* 🚀\n\nYour post is live on LinkedIn:\n🔗 [View Your Post](${result.postUrl})\n\nWant to create another post? Just send a new topic or type /start!`,
+      `🎉 *Post Published Successfully on LinkedIn!* 🚀\n\n🔗 [View Your Live Post](${result.postUrl})\n\nWant to create another post? Just send a new topic or type /start!`,
       { parse_mode: 'Markdown', disable_web_page_preview: false }
     );
   } catch (err) {
@@ -173,30 +244,24 @@ bot.action('action_publish', async (ctx) => {
 });
 
 bot.action('action_regenerate', async (ctx) => {
-  if (!isVerified(ctx.chat.id)) {
-    await ctx.answerCbQuery('Verification required!');
-    return ctx.reply('🔒 Access restricted. Please enter the verification passcode first:');
-  }
+  if (!isVerified(ctx.chat.id)) return;
 
   const session = getSession(ctx.chat.id);
   if (!session.topic) {
     return ctx.reply('⚠️ No active topic. Please use /start to begin.');
   }
 
-  await ctx.answerCbQuery('Regenerating post & photo...');
-  await generateAndPreview(ctx, session.topic, session.context, true, session.link);
+  await ctx.answerCbQuery('Regenerating post...');
+  await generateAndPreview(ctx, session.topic, session.context, session.directImageUrl, true);
 });
 
 bot.action('action_new_topic', async (ctx) => {
-  if (!isVerified(ctx.chat.id)) {
-    await ctx.answerCbQuery('Verification required!');
-    return ctx.reply('🔒 Access restricted. Please enter the verification passcode first:');
-  }
+  if (!isVerified(ctx.chat.id)) return;
 
   const session = getSession(ctx.chat.id);
   session.awaitingTopic = true;
   await ctx.answerCbQuery();
-  await ctx.reply('✍️ Please type and send your new topic:');
+  await ctx.reply('✍️ Please type and send your custom topic:');
 });
 
 // Handle Text Messages
@@ -223,99 +288,175 @@ bot.on('text', async (ctx) => {
 
   session.topic = text;
   session.context = '';
+  session.directImageUrl = '';
   session.awaitingTopic = false;
 
-  await generateAndPreview(ctx, text, '', false);
+  await generateAndPreview(ctx, text, '', '');
 });
 
 /**
- * Handle fetching trending topic & generating post
+ * Fetch and display 5 trending topics for user to select 1
  */
-async function handleTrendingGeneration(ctx) {
-  const loadingMsg = await ctx.reply('🔍 *Scanning Google Trends & Tech Feeds for latest AI & Tech stories...*', { parse_mode: 'Markdown' });
+async function handleShowTrendingList(ctx) {
+  const loadingMsg = await ctx.reply('🔍 *Scanning TechCrunch & Tech Feeds for Top 5 Trending Stories...*', { parse_mode: 'Markdown' });
 
   try {
-    const trending = await getTrendingTechTopic();
+    const list = await getTopTrendingTechTopics(5);
     const session = getSession(ctx.chat.id);
-    session.topic = trending.title;
-    session.context = trending.snippet;
-    session.link = trending.link || '';
-    session.directImageUrl = trending.imageUrl || '';
+    session.trendingList = list;
+
+    let messageText = `🔥 *Top 5 Trending AI & Tech Topics:*\n\n`;
+    const buttons = [];
+
+    list.forEach((item, idx) => {
+      const num = idx + 1;
+      messageText += `*${num}️⃣ ${item.title}*\n_${item.snippet.slice(0, 100)}..._\n\n`;
+      buttons.push([
+        Markup.button.callback(`${num}️⃣ ${item.title.slice(0, 38)}...`, `pick_trend_${idx}`)
+      ]);
+    });
+
+    messageText += `👉 *Select 1 topic from the buttons below to generate your post:*`;
+
+    buttons.push([
+      Markup.button.callback('🔄 Refresh Topics', 'action_trending_list'),
+      Markup.button.callback('✏️ Custom Topic', 'action_new_topic')
+    ]);
 
     await ctx.telegram.editMessageText(
       ctx.chat.id,
       loadingMsg.message_id,
       null,
-      `🔥 *Trending Story Found:*\n"${trending.title}"\n_Source: ${trending.source}_\n\n🧠 *Researching with Gemini & finding relevant photo...*`,
-      { parse_mode: 'Markdown' }
+      messageText,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: Markup.inlineKeyboard(buttons).reply_markup
+      }
     );
-
-    await generateAndPreview(ctx, trending.title, trending.snippet, false, trending.imageUrl || trending.link);
   } catch (err) {
-    console.error('Error fetching trend:', err);
-    await ctx.reply('⚠️ Could not fetch trends right now. Please type a custom topic or try /skip again.');
+    console.error('Error fetching trends list:', err);
+    await ctx.reply('⚠️ Could not fetch trends list. Please type a custom topic or try /skip again.');
   }
 }
 
 /**
- * Generate post and display preview with action buttons
+ * Generate post and present 3-4 image choices
  */
-async function generateAndPreview(ctx, topic, context = '', isRegen = false, articleUrl = '') {
+async function generateAndPreview(ctx, topic, context = '', directImageUrl = '', isRegen = false) {
   const statusMsg = await ctx.reply(
-    isRegen ? '🔄 *Regenerating fresh angle and photo...*' : '🤖 *Researching, writing post & browsing relevant photo...*',
+    isRegen ? '🔄 *Regenerating with fresh perspective & finding photos...*' : '🤖 *Researching, writing humanic post & finding photos...*',
     { parse_mode: 'Markdown' }
   );
 
   try {
-    const { post, imageUrl, imageBuffer, imageSource } = await generateLinkedInPost(topic, context, articleUrl);
+    // 1. Generate post text & keywords
+    const { post, imageKeyword } = await generateLinkedInPostText(topic, context);
     const session = getSession(ctx.chat.id);
     session.draft = post;
-    session.imageUrl = imageUrl;
-    session.imageBuffer = imageBuffer;
 
-    // Send the browsed visual first
-    if (imageUrl) {
-      try {
-        await ctx.replyWithPhoto(
-          imageUrl,
-          { caption: `📸 *Related Photo:* "${topic.slice(0, 100)}"\n_Source: ${imageSource || 'Web'}_`, parse_mode: 'Markdown' }
-        );
-      } catch (photoErr) {
-        console.warn('Telegram photo preview warning:', photoErr.message);
-      }
+    // 2. Fetch 3-4 real image options
+    const imageOptions = await getMultipleImageOptions(topic, imageKeyword, directImageUrl);
+    session.imageOptions = imageOptions;
+    session.selectedImageIndex = 0; // Default to option 1
+
+    // Download default option 1 buffer
+    if (imageOptions.length > 0) {
+      session.imageBuffer = await downloadImageBuffer(imageOptions[0].url);
+    } else {
+      session.imageBuffer = null;
     }
 
+    // 3. Display the Post Preview
     const previewMessage = 
 `📌 *POST PREVIEW:*
 
 ━━━━━━━━━━━━━━━━━━━━
 ${post}
-━━━━━━━━━━━━━━━━━━━━
-
-🖼 *Attached Photo:* Ready to publish with post!
-💡 *Ready to publish to your LinkedIn feed?*`;
-
-    const keyboard = Markup.inlineKeyboard([
-      [Markup.button.callback('🚀 Publish to LinkedIn', 'action_publish')],
-      [
-        Markup.button.callback('🔄 Regenerate Angle', 'action_regenerate'),
-        Markup.button.callback('✏️ Change Topic', 'action_new_topic')
-      ]
-    ]);
+━━━━━━━━━━━━━━━━━━━━`;
 
     await ctx.telegram.editMessageText(
       ctx.chat.id,
       statusMsg.message_id,
       null,
       previewMessage,
-      {
-        reply_markup: keyboard.reply_markup
-      }
+      { parse_mode: 'Markdown' }
     );
+
+    // 4. Send Image Selection Options (3-4 choices)
+    await showImageOptions(ctx);
+
   } catch (err) {
     console.error('Post generation error:', err);
     await ctx.reply('❌ Failed to generate post: ' + err.message);
   }
+}
+
+/**
+ * Display the 3-4 image options for the user to choose
+ */
+async function showImageOptions(ctx) {
+  const session = getSession(ctx.chat.id);
+  const options = session.imageOptions;
+
+  if (!options || options.length === 0) {
+    return showPublishKeyboard(ctx);
+  }
+
+  // Send photo previews
+  let optionsText = `📸 *Select Which Image To Attach (Choose 1 of ${options.length}):*\n\n`;
+  const buttons = [];
+
+  options.forEach((opt, idx) => {
+    const num = idx + 1;
+    const isSelected = idx === session.selectedImageIndex ? '✅ (Selected)' : '';
+    optionsText += `*Option ${num}:* [View Photo](${opt.url}) — _${opt.source}_ ${isSelected}\n`;
+    buttons.push(Markup.button.callback(`Option ${num} ${isSelected ? '✅' : ''}`, `pick_img_${idx}`));
+  });
+
+  const keyboard = [
+    buttons,
+    [
+      Markup.button.callback('🚀 Publish to LinkedIn', 'action_publish'),
+      Markup.button.callback('🚫 No Image', 'pick_img_none')
+    ],
+    [
+      Markup.button.callback('🔄 Regenerate Post', 'action_regenerate'),
+      Markup.button.callback('✏️ Change Topic', 'action_new_topic')
+    ]
+  ];
+
+  // Send photo of current selected option
+  const currentPhoto = options[session.selectedImageIndex >= 0 ? session.selectedImageIndex : 0];
+  try {
+    await ctx.replyWithPhoto(currentPhoto.url, {
+      caption: optionsText,
+      parse_mode: 'Markdown',
+      reply_markup: Markup.inlineKeyboard(keyboard).reply_markup
+    });
+  } catch (photoErr) {
+    await ctx.replyWithMarkdown(optionsText, Markup.inlineKeyboard(keyboard));
+  }
+}
+
+/**
+ * Show Publish keyboard
+ */
+async function showPublishKeyboard(ctx) {
+  const session = getSession(ctx.chat.id);
+  const hasImg = session.imageBuffer ? '✅ Image Attached' : '📝 Text Only';
+
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('🚀 Publish to LinkedIn', 'action_publish')],
+    [
+      Markup.button.callback('🔄 Regenerate Post', 'action_regenerate'),
+      Markup.button.callback('✏️ Change Topic', 'action_new_topic')
+    ]
+  ]);
+
+  await ctx.reply(`💡 *Post Ready!* (${hasImg})\nClick below to publish directly to your LinkedIn feed:`, {
+    parse_mode: 'Markdown',
+    reply_markup: keyboard.reply_markup
+  });
 }
 
 /**
@@ -326,13 +467,13 @@ async function sendHelpMessage(ctx) {
 `📖 *LinkedIn Automation Bot Guide*
 
 1️⃣ *How to post:*
-• Send any custom topic or tap *⚡ Skip Topic* for auto-trending AI/Tech.
-• The bot researches the topic, writes a humanic post with Gemini, and pairs it with an AI-generated 3D visual.
-• Preview the post and image in Telegram.
-• Click *🚀 Publish to LinkedIn* to post both text & image directly to your feed!
+• Tap *⚡ Skip Topic* to see *5 Trending AI/Tech Topics*.
+• Pick 1 topic to generate a humanic thought-leadership post.
+• The bot gives you *3 to 4 related image choices* — pick the best one!
+• Click *🚀 Publish to LinkedIn* to post directly to your feed.
 
-2️⃣ *Hosting 24/7:*
-• **Render.com** (Recommended): Free background worker/web service that runs this bot 24/7 without turning off.`;
+2️⃣ *Signature:*
+• Automatically formats \`peace\\n~SW>IN\` right before the hashtags.`;
 
   await ctx.replyWithMarkdown(helpText, { disable_web_page_preview: true });
 }
@@ -352,6 +493,19 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`🌐 Health check server listening on 0.0.0.0:${PORT}`);
+
+  // Keep-alive Self-Ping for Render Free Tier (pings every 12 minutes so it never sleeps!)
+  const axios = require('axios');
+  const RENDER_URL = process.env.RENDER_EXTERNAL_URL;
+  if (RENDER_URL) {
+    console.log(`⏰ Render Auto Keep-Alive enabled for: ${RENDER_URL}`);
+    setInterval(async () => {
+      try {
+        await axios.get(RENDER_URL);
+        console.log('💓 Keep-alive ping sent to keep Render active!');
+      } catch (err) {}
+    }, 12 * 60 * 1000);
+  }
 });
 
 // Launch Bot
@@ -361,7 +515,7 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`🤖 Logged in as @${me.username} (${me.first_name})`);
     console.log(`🔐 Access Passcode protection enabled: [${BOT_PASSCODE}]`);
     bot.launch();
-    console.log('✅ Bot is running with Gemini 3.6 Flash, Image generation & Passcode protection!');
+    console.log('✅ Bot is running with 5-topic selector & 4-image picker!');
   } catch (err) {
     console.error('❌ Failed to start bot:', err);
   }
