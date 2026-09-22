@@ -350,6 +350,16 @@ bot.catch((err, ctx) => {
     console.log(`🔐 Access Passcode protection enabled: [${BOT_PASSCODE}]`);
     await bot.launch();
     console.log('✅ Bot is running with Gemini 3.6 Flash, Image generation & Passcode protection!');
+
+    // Lightweight HTTP health check server for Render
+    const http = require('http');
+    const PORT = process.env.PORT || 3000;
+    http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('LinkedIn Telegram Bot is running 24/7!');
+    }).listen(PORT, () => {
+      console.log(`🌐 Health check server listening on port ${PORT}`);
+    });
   } catch (err) {
     console.error('❌ Failed to start bot:', err);
   }
