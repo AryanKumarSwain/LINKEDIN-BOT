@@ -1,0 +1,19 @@
+# Environment variables (Never commit secrets to Git!)
+.env
+
+# Dependencies
+node_modules/
+package-lock.json
+
+# Python virtual environment (if created)
+.venv/
+__pycache__/
+
+# Bot runtime state & logs
+.verified_users.json
+*.log
+npm-debug.log*
+
+# OS specific files
+.DS_Store
+Thumbs.db
