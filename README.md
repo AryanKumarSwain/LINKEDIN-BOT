@@ -1,6 +1,6 @@
 # 🤖 Telegram-to-LinkedIn Automation Bot
 
-A smart Telegram bot (`@Linkdin_automationbot`) that lets you create and publish thoughtful, human-like LinkedIn posts either from custom topics or automatically fetched trending AI & Technology topics from Google Trends.
+A smart Telegram bot (`@Linkdin_automationbot`) that lets you create and publish thoughtful, human-like LinkedIn posts either from custom topics or automatically fetched trending AI & Technology topics.
 
 ---
 
@@ -29,7 +29,7 @@ A smart Telegram bot (`@Linkdin_automationbot`) that lets you create and publish
 Your `.env` file is already created with your Telegram Bot Token.
 
 ```env
-TELEGRAM_BOT_TOKEN=8824340603:AAF2YqSuhVbik1hw9EzciR-lRTvEvxh0yUg
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 GEMINI_API_KEY=your_gemini_api_key_here
 LINKEDIN_CLIENT_ID=your_linkedin_client_id
 LINKEDIN_CLIENT_SECRET=your_linkedin_client_secret
